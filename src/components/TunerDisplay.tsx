@@ -1,10 +1,20 @@
 import { View, Text, Dimensions } from "react-native";
 import Svg, { Circle, Line, Rect } from "react-native-svg";
+import Animated, {
+  useAnimatedProps,
+  SharedValue,
+} from "react-native-reanimated";
 import { palette } from "../utils/theme/palette";
 import { paletteTokens } from "../utils/theme/color-palette";
 
+const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
 const width = Dimensions.get("window").width;
 const height = 140;
+
+const LINE_Y = 70;
+const LINE_LENGTH = width;
+const CENTER_X = width / 2;
 
 export function TunerDisplay({
   cents,
@@ -25,26 +35,26 @@ export function TunerDisplay({
   nextNote: string;
   nextOctave: number;
 }) {
-  const lineY = 70;
+  const lineY = LINE_Y;
   const lineStartX = 0;
   const lineEndX = width;
-  const lineLength = lineEndX - lineStartX;
-  const centerX = width / 2;
+  const lineLength = LINE_LENGTH;
+  const centerX = CENTER_X;
 
-  // Clamp cents between -50 and +50
-  // At -50 cents we're at the previous note, at +50 cents we're at the next note
-  const clampedCents = Math.max(-50, Math.min(50, cents));
-
-  // Calculate indicator position: -50 cents = left edge (prev note), 0 = center (current note), +50 cents = right edge (next note)
-  const indicatorX = centerX + (clampedCents / 50) * (lineLength / 2);
-
-  // Determine indicator color based on how in-tune it is
+  // Determine indicator color based on how in-tune it is (using .value for display purposes)
   const isInTune = Math.abs(cents) <= 5;
-  const indicatorColor = isActive
-    ? isInTune
-      ? palette.greens[10]
-      : palette.yellows[10]
-    : paletteTokens.primary.surface[5];
+
+  // Animated props for the indicator circle - runs on UI thread
+  const animatedCircleProps = useAnimatedProps(() => {
+    const clampedCents = Math.max(-50, Math.min(50, cents));
+    const indicatorX = CENTER_X + (clampedCents / 50) * (LINE_LENGTH / 2);
+    const inTune = Math.abs(cents) <= 5;
+
+    return {
+      cx: indicatorX,
+      fill: inTune ? palette.greens[10] : palette.yellows[10],
+    };
+  });
 
   return (
     <View className="items-center">
@@ -63,7 +73,7 @@ export function TunerDisplay({
           <Text
             className="text-6xl font-bold text-white"
             style={[
-              isActive && {
+              {
                 fontSize: 64,
                 fontWeight: "bold",
                 color: isInTune ? "#1AFF97" : "#888",
@@ -146,13 +156,12 @@ export function TunerDisplay({
           );
         })}
 
-        {/* Indicator circle - only show when active */}
+        {/* Animated indicator circle - only show when active */}
         {isActive && (
-          <Circle
-            cx={indicatorX}
+          <AnimatedCircle
+            animatedProps={animatedCircleProps}
             cy={lineY}
             r={14}
-            fill={indicatorColor}
             stroke={paletteTokens.primary.mainBorder}
             strokeWidth={2}
           />

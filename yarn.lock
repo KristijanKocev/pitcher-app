@@ -1459,11 +1459,6 @@
   dependencies:
     "@sinonjs/commons" "^3.0.0"
 
-"@siteed/expo-audio-studio@^2.18.1":
-  version "2.18.1"
-  resolved "https://registry.yarnpkg.com/@siteed/expo-audio-studio/-/expo-audio-studio-2.18.1.tgz#9f4cf796e937db0407f03a78e441ebec15e52071"
-  integrity sha512-gyi02iaj/ZEpMOnFM7jlgXWhy4I6pvu7dK7f95nQgFkuSDogmM/pA/n+lS31ui5HzDbVRle426EpQ1hShVmqDA==
-
 "@tailwindcss/node@4.1.18":
   version "4.1.18"
   resolved "https://registry.yarnpkg.com/@tailwindcss/node/-/node-4.1.18.tgz#9863be0d26178638794a38d6c7c14666fb992e8a"
@@ -1969,6 +1964,11 @@ balanced-match@^1.0.0:
   version "1.0.2"
   resolved "https://registry.yarnpkg.com/balanced-match/-/balanced-match-1.0.2.tgz#e83e3a7e3f300b34cb9d87f615fa0cbf357690ee"
   integrity sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw==
+
+base-64@^1.0.0:
+  version "1.0.0"
+  resolved "https://registry.yarnpkg.com/base-64/-/base-64-1.0.0.tgz#09d0f2084e32a3fd08c2475b973788eee6ae8f4a"
+  integrity sha512-kwDPIFCGx0NZHog36dj+tHiwP4QMzsZ3AgMViUBKI0+V5n4U0ufTCUMhnQ04diaRI8EX/QcPfql7zlhZ7j4zgg==
 
 base64-js@^1.2.3, base64-js@^1.3.1, base64-js@^1.5.1:
   version "1.5.1"
@@ -2531,6 +2531,11 @@ expo-asset@~12.0.12:
   dependencies:
     "@expo/image-utils" "^0.8.8"
     expo-constants "~18.0.12"
+
+expo-audio-studio@^1.3.1:
+  version "1.3.1"
+  resolved "https://registry.yarnpkg.com/expo-audio-studio/-/expo-audio-studio-1.3.1.tgz#c8ea53b950da10ae60b088da488132939038f2a7"
+  integrity sha512-eEN+xG30ZlfcTilOMl6cJKxGSJAbObCpkvPxyqI2r0unDJxC0RhHpSqAkr2af7n/zorsvnm1n+8TS+g7X7ap6Q==
 
 expo-av@~16.0.8:
   version "16.0.8"

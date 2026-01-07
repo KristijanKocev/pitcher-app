@@ -12,7 +12,7 @@
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
-    "plugins": ["@siteed/expo-audio-studio"],
+    "plugins": ["expo-audio-studio"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.justanotherheroriding.pitcher"
