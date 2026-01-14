@@ -438,6 +438,14 @@ export function SmoothTuner() {
     }
   };
 
+  useEffect(() => {
+    handleStart();
+
+    return () => {
+      handleStop();
+    };
+  }, [isRecording]);
+
   // ================================================================
   // COMPUTE NEIGHBOR NOTES
   // ================================================================
@@ -483,19 +491,6 @@ export function SmoothTuner() {
         isTuned={currentPitch.isTuned}
         confidence={currentPitch.confidence}
       />
-
-      {/* Control Button */}
-      <TouchableOpacity
-        style={[
-          styles.button,
-          isRecording ? styles.stopButton : styles.startButton,
-        ]}
-        onPress={isRecording ? handleStop : handleStart}
-      >
-        <Text style={styles.buttonText}>
-          {isRecording ? "Stop" : "Start Listening"}
-        </Text>
-      </TouchableOpacity>
 
       {/* Error Display */}
       {error && <Text style={styles.errorText}>{error}</Text>}
