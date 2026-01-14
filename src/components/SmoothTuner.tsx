@@ -11,7 +11,14 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { View, Text, TouchableOpacity, StyleSheet } from "react-native";
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  StyleSheet,
+  AppState,
+  AppStateStatus,
+} from "react-native";
 import ExpoAudioStudio from "expo-audio-studio";
 import Pitchfinder from "pitchfinder";
 import { AudioChunkEvent } from "expo-audio-studio/build/types";
@@ -95,7 +102,8 @@ export function SmoothTuner() {
   const [isRecording, setIsRecording] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const [appState, setAppState] = useState<AppStateStatus>("active");
+  const [isInitialized, setIsInitialized] = useState(false);
   // ================================================================
   // REFS
   // ================================================================
@@ -171,6 +179,9 @@ export function SmoothTuner() {
         if (CONFIG.LOG_ENABLED) {
           console.log("[SmoothTuner] Initialized");
         }
+        setTimeout(() => {
+          setIsInitialized(true);
+        }, 1000);
       } catch (err) {
         console.error("[SmoothTuner] Setup error:", err);
         setError("Failed to initialize audio");
@@ -439,12 +450,30 @@ export function SmoothTuner() {
   };
 
   useEffect(() => {
-    handleStart();
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      setAppState(nextAppState);
+    };
 
+    const subscription = AppState.addEventListener(
+      "change",
+      handleAppStateChange
+    );
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (appState === "active") {
+      if (isInitialized) {
+        handleStart();
+      }
+    }
     return () => {
       handleStop();
     };
-  }, [isRecording]);
+  }, [appState, isInitialized]);
 
   // ================================================================
   // COMPUTE NEIGHBOR NOTES
@@ -501,7 +530,7 @@ export function SmoothTuner() {
           ? isActive
             ? "Listening..."
             : "Waiting for sound..."
-          : "Tap Start to begin"}
+          : "Starting..."}
       </Text>
 
       {/* Debug Info (only in dev) */}
