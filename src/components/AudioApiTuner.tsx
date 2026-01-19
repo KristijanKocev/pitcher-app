@@ -42,32 +42,37 @@ const CONFIG = {
   // YIN needs ~2-3 periods, so we get good detection
   SAMPLE_RATE: 16000,
 
-  // Larger buffer for low frequency detection
-  // For 82Hz (low E), we need at least 16000/82 * 3 = ~585 samples
-  // Using 4096 gives us plenty of headroom for accurate low-freq detection
-  BUFFER_SIZE: 4096,
+  // Analysis buffer size for YIN algorithm
+  // For 82Hz (low E) at 16kHz, we need at least 16000/82 * 3 = ~585 samples
+  // Using 2048 samples = 128ms window - enough for accurate low-freq detection
+  BUFFER_SIZE: 2048,
+
+  // Ring buffer to accumulate samples (must be >= BUFFER_SIZE)
+  RING_BUFFER_SIZE: 4096,
+
+  // How often to run pitch detection (in samples)
+  // 512 samples = 32ms hop = ~31 detections/sec
+  // Good balance between responsiveness and CPU usage
+  HOP_SIZE: 512,
 
   // Frequency range (guitar: E2=82Hz to E6=1319Hz)
   MIN_FREQUENCY: 60,
   MAX_FREQUENCY: 1500,
 
   // Detection thresholds
-  // Higher threshold = more strict, fewer false positives
-  // The 6400Hz readings suggest we need to be more strict
   YIN_THRESHOLD: 0.2,
 
   // Minimum RMS threshold for audio detection
-  // Very low since the mic signal is weak
-  MIN_RMS_THRESHOLD: 0.001,
+  MIN_RMS_THRESHOLD: 0.0005,
 
   // Audio input gain multiplier to boost weak microphone signal
-  INPUT_GAIN: 10.0,
+  INPUT_GAIN: 15.0,
 
   // Timing
   INACTIVITY_TIMEOUT_MS: 3000,
 
   // Logging
-  LOG_ENABLED: __DEV__,
+  LOG_ENABLED: false,
 };
 
 // ============================================================================
@@ -84,6 +89,14 @@ const IDLE_STATE: StabilizedPitch = {
   isTuned: false,
   confidence: 0,
 };
+
+
+  // Configure audio session for recording (iOS)
+  AudioManager.setAudioSessionOptions({
+    iosCategory: "playAndRecord",
+    iosMode: "measurement",
+    iosOptions: ["defaultToSpeaker"],
+  });
 
 // ============================================================================
 // COMPONENT
@@ -114,13 +127,20 @@ export function AudioApiTuner() {
   const frameCountRef = useRef(0);
   const isStartedRef = useRef(false);
 
-  // Ring buffer for accumulating samples
+  // Ring buffer for accumulating samples (larger for low-freq detection)
   const audioBufferRef = useRef<Float32Array>(
-    new Float32Array(CONFIG.BUFFER_SIZE)
+    new Float32Array(CONFIG.RING_BUFFER_SIZE)
   );
   const bufferWriteIndexRef = useRef(0);
+  const samplesSinceLastAnalysisRef = useRef(0);
+
+  // Reusable analysis buffer to avoid GC pressure
+  const analysisBufferRef = useRef<Float32Array>(
+    new Float32Array(CONFIG.BUFFER_SIZE)
+  );
 
   // Octave stabilization: track recent frequencies to detect octave jumps
+  // Smaller window (5 instead of 10) for faster response to bends
   const recentFrequenciesRef = useRef<number[]>([]);
   const stableFrequencyRef = useRef<number | null>(null);
 
@@ -133,16 +153,18 @@ export function AudioApiTuner() {
     reset: resetStabilization,
     getGhostState,
   } = usePitchStabilization({
-    historySize: 3, // Larger history for more stable readings
+    historySize: 1, // Minimal history for maximum responsiveness to bends
     config: {
       MIN_CONFIDENCE: 0.2, // Lower confidence threshold for quieter sounds
-      FRAMES_TO_CHANGE_NOTE: 3,
-      FRAMES_TO_CHANGE_NOTE_WHILE_TUNING: 5,
+      FRAMES_TO_CHANGE_NOTE: 2, // Faster note changes
+      FRAMES_TO_CHANGE_NOTE_WHILE_TUNING: 3, // Faster even when tuned
       TUNED_THRESHOLD_CENTS: 5,
       UNTUNED_THRESHOLD_CENTS: 10,
-      // Longer ghost duration so display doesn't fade out too quickly
+      // Shorter ghost duration for snappier response
       GHOST_DURATION_MS: 3000,
-      GHOST_FADE_START_MS: 1000,
+      GHOST_FADE_START_MS: 1500,
+      // Reduce jump threshold to allow bends to register as pitch changes
+      MAX_SEMITONE_JUMP: 6, // Allow larger jumps (full bend = 2-3 semitones)
     },
   });
 
@@ -156,8 +178,6 @@ export function AudioApiTuner() {
         return;
       }
 
-      frameCountRef.current++;
-
       // Log incoming buffer info periodically
       if (CONFIG.LOG_ENABLED && frameCountRef.current % 120 === 0) {
         console.log("[AudioApiTuner] Buffer info:", {
@@ -168,53 +188,50 @@ export function AudioApiTuner() {
       }
 
       try {
-        // SIMPLIFIED APPROACH: Use incoming samples directly for pitch detection
-        // instead of ring buffer, since we're getting consistent buffer sizes
-        // This avoids potential ring buffer timing issues
+        // Accumulate samples into ring buffer
+        const ringBuffer = audioBufferRef.current;
+        const ringSize = CONFIG.RING_BUFFER_SIZE;
 
-        // Use the incoming samples directly if they're large enough
-        // Otherwise accumulate in ring buffer
-        let analysisBuffer: Float32Array;
-
-        if (samples.length >= CONFIG.BUFFER_SIZE) {
-          // Use the last BUFFER_SIZE samples from incoming data
-          analysisBuffer = samples.slice(
-            samples.length - CONFIG.BUFFER_SIZE,
-            samples.length
-          );
-        } else {
-          // Accumulate in ring buffer
-          const buffer = audioBufferRef.current;
-          const bufferSize = CONFIG.BUFFER_SIZE;
-
-          for (let i = 0; i < samples.length; i++) {
-            buffer[bufferWriteIndexRef.current] = samples[i];
-            bufferWriteIndexRef.current =
-              (bufferWriteIndexRef.current + 1) % bufferSize;
-          }
-
-          // Create analysis buffer (unroll ring buffer)
-          analysisBuffer = new Float32Array(bufferSize);
-          for (let i = 0; i < bufferSize; i++) {
-            analysisBuffer[i] =
-              buffer[(bufferWriteIndexRef.current + i) % bufferSize];
-          }
+        for (let i = 0; i < samples.length; i++) {
+          ringBuffer[bufferWriteIndexRef.current] = samples[i];
+          bufferWriteIndexRef.current =
+            (bufferWriteIndexRef.current + 1) % ringSize;
         }
 
-        // Apply input gain to boost weak microphone signal
-        // This helps with quiet sounds and sustaining notes
+        // Track how many new samples we've received since last analysis
+        samplesSinceLastAnalysisRef.current += samples.length;
+
+        // Only run analysis every HOP_SIZE samples for responsive updates
+        // This creates overlapping analysis windows
+        if (samplesSinceLastAnalysisRef.current < CONFIG.HOP_SIZE) {
+          return; // Wait for more samples
+        }
+
+        // Reset counter (keep remainder for timing accuracy)
+        samplesSinceLastAnalysisRef.current =
+          samplesSinceLastAnalysisRef.current % CONFIG.HOP_SIZE;
+
+        frameCountRef.current++;
+
+        // Reuse analysis buffer to avoid GC pressure
+        const analysisBuffer = analysisBufferRef.current;
+        const bufferSize = CONFIG.BUFFER_SIZE;
+        const startIdx =
+          (bufferWriteIndexRef.current - bufferSize + ringSize) % ringSize;
+
+        // Extract from ring buffer and apply gain in single pass
         const gain = CONFIG.INPUT_GAIN;
-        for (let i = 0; i < analysisBuffer.length; i++) {
-          analysisBuffer[i] = Math.max(-1, Math.min(1, analysisBuffer[i] * gain));
+        let rms = 0;
+
+        for (let i = 0; i < bufferSize; i++) {
+          const sample = ringBuffer[(startIdx + i) % ringSize] * gain;
+          // Clamp to [-1, 1]
+          const clamped = sample > 1 ? 1 : sample < -1 ? -1 : sample;
+          analysisBuffer[i] = clamped;
+          rms += clamped * clamped;
         }
 
-        // Check if there's any signal (RMS check)
-        let rms = 0;
-        const bufLen = analysisBuffer.length;
-        for (let i = 0; i < bufLen; i++) {
-          rms += analysisBuffer[i] * analysisBuffer[i];
-        }
-        rms = Math.sqrt(rms / bufLen);
+        rms = Math.sqrt(rms / bufferSize);
 
         // Log RMS periodically for debugging
         if (CONFIG.LOG_ENABLED && frameCountRef.current % 60 === 0) {
@@ -310,14 +327,15 @@ export function AudioApiTuner() {
           }
         }
 
-        // Update recent frequencies for tracking
+        // Update recent frequencies for tracking (smaller window for bends)
         recentFrequenciesRef.current.push(correctedFrequency);
-        if (recentFrequenciesRef.current.length > 10) {
+        if (recentFrequenciesRef.current.length > 5) {
           recentFrequenciesRef.current.shift();
         }
 
         // Update stable frequency using median of recent readings
-        if (recentFrequenciesRef.current.length >= 3) {
+        // Use smaller window (3 samples) for faster response to bends
+        if (recentFrequenciesRef.current.length >= 2) {
           const sorted = [...recentFrequenciesRef.current].sort(
             (a, b) => a - b
           );
@@ -342,7 +360,7 @@ export function AudioApiTuner() {
           timestamp: Date.now(),
         };
 
-        // Process through stabilization
+        // Process through stabilization (for note name hysteresis and tuned state)
         const stabilized = processReading(reading);
 
         // Clear inactivity timeout
@@ -352,11 +370,14 @@ export function AudioApiTuner() {
 
         setIsActive(true);
 
-        // Show detected note with corrected frequency
+        // IMPORTANT: Show RAW cents immediately for responsive bend tracking
+        // Only use stabilized note name (hysteresis prevents note flickering)
+        // This is how Universal Tuner works - display updates instantly,
+        // but the "stable note" requires multiple consistent readings
         setCurrentPitch({
-          noteName: noteInfo.noteName,
-          octave: noteInfo.octave,
-          cents: noteInfo.cents,
+          noteName: stabilized.noteName, // Use stabilized note name
+          octave: stabilized.octave, // Use stabilized octave
+          cents: noteInfo.cents, // Use RAW cents for instant response
           frequency: correctedFrequency,
           isTuned: stabilized.isTuned,
           isGhost: false,
@@ -422,12 +443,7 @@ export function AudioApiTuner() {
       frameCountRef.current = 0;
       isStartedRef.current = true;
 
-      // Configure audio session for recording (iOS)
-      AudioManager.setAudioSessionOptions({
-        iosCategory: "playAndRecord",
-        iosMode: "measurement",
-        iosOptions: ["defaultToSpeaker"],
-      });
+    
 
       // Activate the audio session
       const sessionActive = await AudioManager.setAudioSessionActivity(true);
@@ -449,8 +465,11 @@ export function AudioApiTuner() {
 
       // Reset state
       resetStabilization();
-      audioBufferRef.current.fill(0);
+      audioBufferRef.current = new Float32Array(CONFIG.RING_BUFFER_SIZE);
       bufferWriteIndexRef.current = 0;
+      samplesSinceLastAnalysisRef.current = 0;
+      recentFrequenciesRef.current = [];
+      stableFrequencyRef.current = null;
       setCurrentPitch(IDLE_STATE);
 
       // Create AudioContext
@@ -470,9 +489,10 @@ export function AudioApiTuner() {
       audioRecorderRef.current = new AudioRecorder();
 
       // Set up audio callback with options
+      // Use smaller buffer for more frequent callbacks = faster response
       const callbackOptions = {
         sampleRate: actualSampleRate,
-        bufferLength: CONFIG.BUFFER_SIZE,
+        bufferLength: CONFIG.HOP_SIZE, // Small buffer = frequent callbacks
         channelCount: 1,
       };
 
