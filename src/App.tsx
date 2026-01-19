@@ -1,17 +1,50 @@
-import { Text, View } from "react-native";
-import { AudioApiTuner } from "./components/AudioApiTuner";
+import { NavigationContainer } from "@react-navigation/native";
+import { createNativeBottomTabNavigator, NativeBottomTabIcon } from "@react-navigation/bottom-tabs/unstable";
+import { Platform } from "react-native";
+import { TunerScreen, ChordTimelineScreen } from "./screens";
 import "../global.css";
 
+const Tab = createNativeBottomTabNavigator();
 
 export default function App() {
-
   return (
-    <View className="flex-1 bg-black  justify-center items-center">
-      
-
-      
-    <Text className="text-white text-3xl font-bold text-center">Tuner</Text>
-          <AudioApiTuner />
-    </View>
+    <NavigationContainer>
+      <Tab.Navigator
+        screenOptions={{
+          headerShown: false,
+          tabBarActiveTintColor: "#38acdd",
+          lazy: true,
+          
+        }}
+        
+      >
+        <Tab.Screen
+          name="Tuner"
+          component={TunerScreen}
+          options={{
+            tabBarLabel: "Tuner",
+            tabBarIcon: ({ focused }) => {
+              return {
+                type: 'sfSymbol',
+                name: focused ? 'tuningfork' : 'tuningfork',
+              };
+            } ,
+          }}
+        />
+        <Tab.Screen
+          name="Timeline"
+          component={ChordTimelineScreen}
+          options={{
+            tabBarLabel: "Timeline",
+            tabBarIcon: ({ focused }) => {
+              return {
+                type: 'sfSymbol',
+                name: focused ? 'waveform.path' : 'waveform.path.ecg',
+              };
+            },
+          }}
+        />
+      </Tab.Navigator>
+    </NavigationContainer>
   );
 }

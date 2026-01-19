@@ -102,14 +102,19 @@ const IDLE_STATE: StabilizedPitch = {
 // COMPONENT
 // ============================================================================
 
-export function AudioApiTuner() {
+interface AudioApiTunerProps {
+  /** Whether the component should be actively listening (controlled by navigation focus) */
+  isActive?: boolean;
+}
+
+export function AudioApiTuner({ isActive: isScreenActive = true }: AudioApiTunerProps) {
   // ================================================================
   // STATE
   // ================================================================
 
   const [currentPitch, setCurrentPitch] = useState<StabilizedPitch>(IDLE_STATE);
   const [isRecording, setIsRecording] = useState(false);
-  const [isActive, setIsActive] = useState(false);
+  const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppStateStatus>("active");
   const [isInitialized, setIsInitialized] = useState(false);
@@ -368,7 +373,7 @@ export function AudioApiTuner() {
           clearTimeout(inactivityTimeoutRef.current);
         }
 
-        setIsActive(true);
+        setIsListening(true);
 
         // IMPORTANT: Show RAW cents immediately for responsive bend tracking
         // Only use stabilized note name (hysteresis prevents note flickering)
@@ -418,7 +423,7 @@ export function AudioApiTuner() {
         }));
       } else if (currentPitch.isGhost) {
         setCurrentPitch(IDLE_STATE);
-        setIsActive(false);
+        setIsListening(false);
       }
     }, 50);
 
@@ -584,7 +589,7 @@ export function AudioApiTuner() {
 
       // Reset state
       setIsRecording(false);
-      setIsActive(false);
+      setIsListening(false);
       setCurrentPitch(IDLE_STATE);
       resetStabilization();
 
@@ -627,19 +632,25 @@ export function AudioApiTuner() {
     };
   }, []);
 
-  // Start/stop based on app state and initialization
+  // Start/stop based on app state, initialization, and screen focus
   useEffect(() => {
-    if (appState === "active" && isInitialized) {
+    const shouldBeActive = appState === "active" && isInitialized && isScreenActive;
+    
+    if (shouldBeActive && !isStartedRef.current) {
       handleStart();
+    } else if (!shouldBeActive && isStartedRef.current) {
+      handleStop();
     }
+  }, [appState, isInitialized, isScreenActive]);
 
+  // Cleanup on unmount
+  useEffect(() => {
     return () => {
-      // Cleanup when component unmounts or dependencies change
       if (isStartedRef.current) {
         handleStop();
       }
     };
-  }, [appState, isInitialized]);
+  }, []);
 
   // ================================================================
   // COMPUTE NEIGHBOR NOTES
@@ -673,7 +684,7 @@ export function AudioApiTuner() {
       {/* Tuner Display */}
       <SmoothTunerDisplay
         cents={currentPitch.cents}
-        isActive={isActive}
+        isActive={isListening}
         noteName={currentPitch.noteName}
         octave={currentPitch.octave}
         prevNote={neighborNotes.prevNote}
@@ -693,7 +704,7 @@ export function AudioApiTuner() {
       {/* Status Text */}
       <Text style={styles.statusText}>
         {isRecording
-          ? isActive
+          ? isListening
             ? "Listening..."
             : "Waiting for sound..."
           : "Starting..."}
