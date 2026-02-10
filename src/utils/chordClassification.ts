@@ -45,6 +45,25 @@ const QUALITY_DISPLAY: Record<string, string> = {
   sus4: "sus4",
 };
 
+// --- F4: Transition Priors ---
+// Plausibility indexed by ascending semitone interval (0–11).
+// Index 0 = same root (1.0), 5 = P4 (0.95), 7 = P5 (0.95), 3 = m3 (0.90),
+// 6 = tritone (0.60), etc.
+const TRANSITION_PLAUSIBILITY = [
+  1.0,  // 0: same root
+  0.70, // 1: m2
+  0.80, // 2: M2
+  0.90, // 3: m3
+  0.80, // 4: M3
+  0.95, // 5: P4
+  0.60, // 6: tritone
+  0.95, // 7: P5
+  0.80, // 8: m6
+  0.85, // 9: M6
+  0.80, // 10: m7
+  0.65, // 11: M7
+];
+
 export interface ChordResult {
   chord: string; // e.g. "Am7", "C", "G7"
   root: string; // e.g. "A", "C", "G"
@@ -81,6 +100,45 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
   return denom > 0 ? dotProduct / denom : 0;
+}
+
+/**
+ * Get the transition plausibility between two root notes.
+ * Returns 1.0 if either root is unknown.
+ */
+function getTransitionPlausibility(
+  prevRoot: string,
+  nextRoot: string
+): number {
+  const prevIdx = NOTE_NAMES.indexOf(prevRoot);
+  const nextIdx = NOTE_NAMES.indexOf(nextRoot);
+  if (prevIdx < 0 || nextIdx < 0) return 1.0;
+  const interval = ((nextIdx - prevIdx) % 12 + 12) % 12;
+  return TRANSITION_PLAUSIBILITY[interval];
+}
+
+/**
+ * Get the dominant bass note pitch class from a bass chromagram.
+ * Returns -1 if too quiet (peak must be > 0.3 and > 2× average).
+ */
+function getDominantBassNote(bassChroma: number[]): number {
+  let maxVal = 0;
+  let maxIdx = -1;
+  let sum = 0;
+
+  for (let i = 0; i < 12; i++) {
+    sum += bassChroma[i];
+    if (bassChroma[i] > maxVal) {
+      maxVal = bassChroma[i];
+      maxIdx = i;
+    }
+  }
+
+  const avg = sum / 12;
+  if (maxVal > 0.3 && maxVal > 2 * avg) {
+    return maxIdx;
+  }
+  return -1;
 }
 
 /**
@@ -144,6 +202,53 @@ export function classifyChroma(chroma: number[]): ChordResult {
     root: bestMatch.root,
     quality: bestMatch.quality,
     confidence: bestMatch.similarity,
+    chroma,
+  };
+}
+
+/**
+ * Classify a chroma vector with bass anchoring and transition priors.
+ * Boosts chords whose root matches the dominant bass note (×1.15),
+ * and applies transition plausibility when a previous root is known.
+ */
+export function classifyChromaWithBass(
+  chroma: number[],
+  bassChroma: number[],
+  previousRoot?: string
+): ChordResult {
+  const dominantBass = getDominantBassNote(bassChroma);
+
+  let bestMatch = { root: "C", quality: "maj", similarity: -1 };
+
+  for (const [quality, template] of Object.entries(CHORD_TEMPLATES)) {
+    for (let root = 0; root < 12; root++) {
+      const rotated = rotateTemplate(template, root);
+      let similarity = cosineSimilarity(chroma, rotated);
+
+      // Bass anchoring: boost chords whose root matches the dominant bass note
+      if (dominantBass >= 0 && root === dominantBass) {
+        similarity *= 1.15;
+      }
+
+      // Transition prior: penalize implausible root movements
+      if (previousRoot) {
+        similarity *= getTransitionPlausibility(previousRoot, NOTE_NAMES[root]);
+      }
+
+      if (similarity > bestMatch.similarity) {
+        bestMatch = { root: NOTE_NAMES[root], quality, similarity };
+      }
+    }
+  }
+
+  const displayQuality = QUALITY_DISPLAY[bestMatch.quality] ?? bestMatch.quality;
+  const chordName = `${bestMatch.root}${displayQuality}`;
+
+  return {
+    chord: chordName,
+    root: bestMatch.root,
+    quality: bestMatch.quality,
+    confidence: Math.min(1, bestMatch.similarity),
     chroma,
   };
 }
@@ -252,9 +357,13 @@ export function classifyFrames(
  * Uses confidence hysteresis: a new chord must exceed the current chord's
  * confidence by a margin before switching. This prevents bouncing between
  * closely-scored chords during arpeggios.
+ *
+ * Onset-aware: when an onset is detected, the hold time and frame confirmation
+ * requirements are relaxed to allow instant chord transitions on strums/attacks.
  */
 export class ChordSmoother {
   private currentChord: string = "N/C";
+  private currentRoot: string = "";
   private currentConfidence: number = 0;
   private lastChangeTime: number = 0;
   private candidateChord: string = "";
@@ -263,6 +372,7 @@ export class ChordSmoother {
   private minHoldMs: number;
   private minFramesToConfirm: number;
   private hysteresisMargin: number;
+  private lastOnsetTime: number = 0;
 
   constructor(
     minHoldMs: number = 100,
@@ -274,9 +384,29 @@ export class ChordSmoother {
     this.hysteresisMargin = hysteresisMargin;
   }
 
-  process(result: ChordResult): ChordResult & { smoothedChord: string } {
+  getCurrentRoot(): string {
+    return this.currentRoot;
+  }
+
+  process(
+    result: ChordResult,
+    isOnset: boolean = false,
+    onsetStrength: number = 0
+  ): ChordResult & { smoothedChord: string } {
     const now = Date.now();
     const timeSinceChange = now - this.lastChangeTime;
+
+    // Track onset timing
+    if (isOnset) {
+      this.lastOnsetTime = now;
+    }
+
+    // Onset-aware effective parameters:
+    // On onset → instant switch allowed (hold=0, frames=1)
+    // Between onsets → extend hold for stability
+    const recentOnset = isOnset || (now - this.lastOnsetTime < 30);
+    const effectiveHoldMs = recentOnset ? 0 : this.minHoldMs * 1.5;
+    const effectiveFramesToConfirm = recentOnset ? 1 : this.minFramesToConfirm;
 
     if (result.chord === this.currentChord) {
       this.candidateChord = "";
@@ -291,8 +421,8 @@ export class ChordSmoother {
     // re-confirmed, its stored confidence drops ~5%.
     this.currentConfidence *= 0.95;
 
-    // Enforce minimum hold
-    if (timeSinceChange < this.minHoldMs) {
+    // Enforce minimum hold (onset-aware)
+    if (timeSinceChange < effectiveHoldMs) {
       return {
         ...result,
         smoothedChord: this.currentChord,
@@ -305,6 +435,7 @@ export class ChordSmoother {
     // arpeggio flicker while still allowing real chord changes through.
     if (
       this.currentChord !== "N/C" &&
+      !recentOnset &&
       result.confidence < this.currentConfidence + this.hysteresisMargin
     ) {
       this.candidateChord = "";
@@ -324,6 +455,7 @@ export class ChordSmoother {
       result.confidence > this.currentConfidence + 0.1
     ) {
       this.currentChord = result.chord;
+      this.currentRoot = result.root;
       this.currentConfidence = result.confidence;
       this.lastChangeTime = now;
       this.candidateChord = "";
@@ -342,10 +474,11 @@ export class ChordSmoother {
       this.candidateConfidenceSum = result.confidence;
     }
 
-    if (this.candidateCount >= this.minFramesToConfirm) {
+    if (this.candidateCount >= effectiveFramesToConfirm) {
       const avgConfidence =
         this.candidateConfidenceSum / this.candidateCount;
       this.currentChord = result.chord;
+      this.currentRoot = result.root;
       this.currentConfidence = avgConfidence;
       this.lastChangeTime = now;
       this.candidateChord = "";
@@ -367,10 +500,15 @@ export class ChordSmoother {
 
   reset(): void {
     this.currentChord = "N/C";
+    this.currentRoot = "";
     this.currentConfidence = 0;
     this.lastChangeTime = 0;
     this.candidateChord = "";
     this.candidateCount = 0;
     this.candidateConfidenceSum = 0;
+    this.lastOnsetTime = 0;
   }
 }
+
+// Re-export for F5 sequence context
+export { getTransitionPlausibility, getDominantBassNote, NOTE_NAMES };

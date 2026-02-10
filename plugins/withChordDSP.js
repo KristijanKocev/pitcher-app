@@ -8,20 +8,20 @@ function withChordDSP(config) {
     (config) => {
       const podfilePath = path.join(
         config.modRequest.platformProjectRoot,
-        "Podfile"
+        "Podfile",
       );
       let podfile = fs.readFileSync(podfilePath, "utf-8");
 
+      // Add the NitroChordDsp pod declaration
       const podLine = `  pod 'NitroChordDsp', :path => '../modules/chord-dsp'`;
-
       if (!podfile.includes("NitroChordDsp")) {
         podfile = podfile.replace(
           "use_expo_modules!",
-          `use_expo_modules!\n${podLine}`
+          `use_expo_modules!\n${podLine}`,
         );
-        fs.writeFileSync(podfilePath, podfile);
       }
 
+      fs.writeFileSync(podfilePath, podfile);
       return config;
     },
   ]);

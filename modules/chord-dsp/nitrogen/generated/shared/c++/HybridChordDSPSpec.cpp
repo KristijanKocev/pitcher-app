@@ -17,6 +17,10 @@ namespace margelo::nitro::chorddsp {
       prototype.registerHybridMethod("resampleTo22050", &HybridChordDSPSpec::resampleTo22050);
       prototype.registerHybridMethod("computeMelSpectrogram", &HybridChordDSPSpec::computeMelSpectrogram);
       prototype.registerHybridMethod("computeChromagram", &HybridChordDSPSpec::computeChromagram);
+      prototype.registerHybridMethod("computeBassChromagram", &HybridChordDSPSpec::computeBassChromagram);
+      prototype.registerHybridMethod("initOnsetDetector", &HybridChordDSPSpec::initOnsetDetector);
+      prototype.registerHybridMethod("detectOnset", &HybridChordDSPSpec::detectOnset);
+      prototype.registerHybridMethod("resetOnsetDetector", &HybridChordDSPSpec::resetOnsetDetector);
     });
   }
 

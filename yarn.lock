@@ -2176,9 +2176,7 @@ chalk@^4.0.0, chalk@^4.1.0, chalk@^4.1.2:
     supports-color "^7.1.0"
 
 "chord-dsp@file:./modules/chord-dsp":
-  version "0.1.0"
-  dependencies:
-    react-native-nitro-modules "^0.20.0"
+  version "0.0.1"
 
 chownr@^3.0.0:
   version "3.0.0"
@@ -2629,11 +2627,6 @@ expo-audio-studio@^1.3.1:
   version "1.3.1"
   resolved "https://registry.yarnpkg.com/expo-audio-studio/-/expo-audio-studio-1.3.1.tgz#c8ea53b950da10ae60b088da488132939038f2a7"
   integrity sha512-eEN+xG30ZlfcTilOMl6cJKxGSJAbObCpkvPxyqI2r0unDJxC0RhHpSqAkr2af7n/zorsvnm1n+8TS+g7X7ap6Q==
-
-expo-av@~16.0.8:
-  version "16.0.8"
-  resolved "https://registry.yarnpkg.com/expo-av/-/expo-av-16.0.8.tgz#b1671127f3b2ecaeb9c69fc2301cf791d4504dd6"
-  integrity sha512-cmVPftGR/ca7XBgs7R6ky36lF3OC0/MM/lpgX/yXqfv0jASTsh7AYX9JxHCwFmF+Z6JEB1vne9FDx4GiLcGreQ==
 
 expo-constants@~18.0.12, expo-constants@~18.0.13:
   version "18.0.13"

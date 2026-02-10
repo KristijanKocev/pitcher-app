@@ -25,12 +25,13 @@ import {
 import { LegendList, LegendListRef } from "@legendapp/list";
 
 import {
-  classifyChroma,
+  classifyChromaWithBass,
   classifyChromaTopN,
   classifyFrame,
   ChordSmoother,
   ChordResult,
 } from "../utils/chordClassification";
+import { ChordSequenceContext } from "../utils/chordSequenceContext";
 import { ChordDSP } from "chord-dsp";
 import * as ChordModelInference from "../../modules/chord-model-inference-module";
 
@@ -164,9 +165,14 @@ export function ChordDetection({
   // Exponential decay chroma accumulator — notes fade naturally over time,
   // so arpeggiated notes accumulate into a full chord picture
   const chromaAccumulatorRef = useRef<number[] | null>(null);
+  const bassChromaAccumulatorRef = useRef<number[] | null>(null);
   const framesAccumulatedRef = useRef(0);
   // Separate counter for ML inference gating
   const mlFrameCountRef = useRef(0);
+  // Sequence context for temporal voting (F5)
+  const sequenceContextRef = useRef(new ChordSequenceContext(24));
+  // Onset detector initialization flag
+  const onsetInitializedRef = useRef(false);
 
   // ML inference lock and latest result
   const mlInferenceInProgressRef = useRef(false);
@@ -322,58 +328,96 @@ export function ChordDetection({
         if (rms < CONFIG.MIN_RMS_THRESHOLD) {
           setIsListening(false);
           chromaAccumulatorRef.current = null;
+          bassChromaAccumulatorRef.current = null;
           framesAccumulatedRef.current = 0;
           mlFrameCountRef.current = 0;
+          sequenceContextRef.current.reset();
           setAlternatives([]);
           return;
         }
 
         setIsListening(true);
 
-        // Nitro C++ DSP: compute chromagram
-        const frameChroma = ChordDSP.computeChromagram(
-          Array.from(analysisBuffer),
-          sampleRate
-        );
+        const analysisArray = Array.from(analysisBuffer);
 
-        // Adaptive decay accumulator: decay rate varies with spectral flux.
-        // Small chroma change (arpeggio) → high decay (preserve memory).
-        // Large chroma change (new chord) → low decay (flush old notes fast).
+        // Nitro C++ DSP: compute full + bass chromagrams
+        const frameChroma = ChordDSP.computeChromagram(analysisArray, sampleRate);
+        const frameBassChroma = ChordDSP.computeBassChromagram(analysisArray, sampleRate);
+
+        // aubio onset detection: extract latest HOP_SIZE samples
+        let isOnset = false;
+        let onsetStrength = 0;
+        if (onsetInitializedRef.current) {
+          const hopSize = CONFIG.HOP_SIZE;
+          const hopStart = (bufferWriteIndexRef.current - hopSize + ringSize) % ringSize;
+          const hopSamples = new Array(hopSize);
+          for (let i = 0; i < hopSize; i++) {
+            hopSamples[i] = ringBuffer[(hopStart + i) % ringSize] * gain;
+          }
+          const onsetResult = ChordDSP.detectOnset(hopSamples);
+          isOnset = onsetResult[0] > 0;
+          onsetStrength = onsetResult[1];
+        }
+
+        // Adaptive decay accumulator for full chroma
         const acc = chromaAccumulatorRef.current;
         const avgChroma = new Array(12);
 
         if (acc === null) {
-          // First frame — seed the accumulator
           for (let i = 0; i < 12; i++) avgChroma[i] = frameChroma[i];
         } else {
-          // Spectral flux: sum of positive chroma increases (new energy appearing)
           let flux = 0;
           for (let i = 0; i < 12; i++) {
             const increase = frameChroma[i] - acc[i];
             if (increase > 0) flux += increase;
           }
-
-          // Continuous mapping: flux=0 → decay=0.7, flux≥0.7 → decay=0.2
-          // Lower ceiling prioritizes recent notes; floor flushes fast on chord changes
           const decay = Math.max(0.2, 0.7 - flux * 0.7);
-
           for (let i = 0; i < 12; i++) {
             avgChroma[i] = acc[i] * decay + frameChroma[i] * (1 - decay);
           }
         }
         chromaAccumulatorRef.current = avgChroma;
+
+        // Adaptive decay accumulator for bass chroma (same logic)
+        const bassAcc = bassChromaAccumulatorRef.current;
+        const avgBassChroma = new Array(12);
+
+        if (bassAcc === null) {
+          for (let i = 0; i < 12; i++) avgBassChroma[i] = frameBassChroma[i];
+        } else {
+          let bassFlux = 0;
+          for (let i = 0; i < 12; i++) {
+            const increase = frameBassChroma[i] - bassAcc[i];
+            if (increase > 0) bassFlux += increase;
+          }
+          const bassDecay = Math.max(0.2, 0.7 - bassFlux * 0.7);
+          for (let i = 0; i < 12; i++) {
+            avgBassChroma[i] = bassAcc[i] * bassDecay + frameBassChroma[i] * (1 - bassDecay);
+          }
+        }
+        bassChromaAccumulatorRef.current = avgBassChroma;
+
         framesAccumulatedRef.current++;
 
         // Wait for accumulator to warm up (~3 frames / ~192ms)
         if (framesAccumulatedRef.current < 3) return;
 
-        // Normalize for classification
+        // Normalize full chroma for classification
         const maxVal = Math.max(...avgChroma);
         const classChroma = new Array(12);
         if (maxVal > 0) {
           for (let i = 0; i < 12; i++) classChroma[i] = avgChroma[i] / maxVal;
         } else {
           for (let i = 0; i < 12; i++) classChroma[i] = 0;
+        }
+
+        // Normalize bass chroma separately
+        const bassMaxVal = Math.max(...avgBassChroma);
+        const classBassChroma = new Array(12);
+        if (bassMaxVal > 0) {
+          for (let i = 0; i < 12; i++) classBassChroma[i] = avgBassChroma[i] / bassMaxVal;
+        } else {
+          for (let i = 0; i < 12; i++) classBassChroma[i] = 0;
         }
 
         // ML inference on a separate cadence (~every 4 analysis frames)
@@ -384,15 +428,14 @@ export function ChordDetection({
           mlFrameCountRef.current >= 4
         ) {
           mlFrameCountRef.current = 0;
-          // 0.75 second window instead of 2s for faster response
-          const mlWindowSize = Math.floor(sampleRate * 0.75);
+          // 1.5 second window — captures more arpeggio notes (~61 mel frames) [F1]
+          const mlWindowSize = Math.floor(sampleRate * 1.5);
           const mlBuffer = new Float32Array(mlWindowSize);
           const mlStart =
             (bufferWriteIndexRef.current - mlWindowSize + ringSize) % ringSize;
           for (let i = 0; i < mlWindowSize; i++) {
             mlBuffer[i] = ringBuffer[(mlStart + i) % ringSize] * gain;
           }
-          // ML results stored separately - they don't drive the smoother directly
           runMLInference(mlBuffer, sampleRate).then((mlResult) => {
             if (mlResult && mlResult.confidence > 0.5) {
               mlLastResultRef.current = mlResult;
@@ -400,8 +443,9 @@ export function ChordDetection({
           });
         }
 
-        // Immediate chroma-based classification
-        const rawResult = classifyChroma(classChroma);
+        // Chroma classification with bass anchoring + transition priors [F2, F4]
+        const previousRoot = chordSmootherRef.current.getCurrentRoot() || undefined;
+        const rawResult = classifyChromaWithBass(classChroma, classBassChroma, previousRoot);
 
         // Fuse ML result: boost confidence when ML agrees, or defer to
         // high-confidence ML when chroma is uncertain
@@ -420,7 +464,11 @@ export function ChordDetection({
           }
         }
 
-        const smoothed = chordSmootherRef.current.process(rawResult);
+        // Sequence context: temporal voting with bass consensus [F5]
+        const contextResult = sequenceContextRef.current.process(rawResult, classBassChroma);
+
+        // Onset-aware smoothing [F3]
+        const smoothed = chordSmootherRef.current.process(contextResult, isOnset, onsetStrength);
 
         setCurrentChord(smoothed.smoothedChord);
         setCurrentConfidence(smoothed.confidence);
@@ -469,15 +517,26 @@ export function ChordDetection({
       bufferWriteIndexRef.current = 0;
       samplesSinceLastAnalysisRef.current = 0;
       chromaAccumulatorRef.current = null;
+      bassChromaAccumulatorRef.current = null;
       framesAccumulatedRef.current = 0;
       mlFrameCountRef.current = 0;
       mlLastResultRef.current = null;
+      sequenceContextRef.current.reset();
 
       audioContextRef.current = new AudioContext({
         sampleRate: CONFIG.SAMPLE_RATE,
       });
 
       const actualSampleRate = audioContextRef.current.sampleRate;
+
+      // Initialize aubio onset detector [F3]
+      try {
+        ChordDSP.initOnsetDetector(actualSampleRate, CONFIG.FFT_SIZE, CONFIG.HOP_SIZE);
+        onsetInitializedRef.current = true;
+      } catch (e) {
+        console.warn("[ChordDetection] Onset detector init failed:", e);
+        onsetInitializedRef.current = false;
+      }
       audioRecorderRef.current = new AudioRecorder();
 
       audioRecorderRef.current.onError((error) => {

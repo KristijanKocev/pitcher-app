@@ -51,6 +51,10 @@ namespace margelo::nitro::chorddsp {
       virtual std::vector<double> resampleTo22050(const std::vector<double>& samples, double sourceSampleRate) = 0;
       virtual std::vector<double> computeMelSpectrogram(const std::vector<double>& samples, double sampleRate) = 0;
       virtual std::vector<double> computeChromagram(const std::vector<double>& samples, double sampleRate) = 0;
+      virtual std::vector<double> computeBassChromagram(const std::vector<double>& samples, double sampleRate) = 0;
+      virtual void initOnsetDetector(double sampleRate, double bufferSize, double hopSize) = 0;
+      virtual std::vector<double> detectOnset(const std::vector<double>& samples) = 0;
+      virtual void resetOnsetDetector() = 0;
 
     protected:
       // Hybrid Setup

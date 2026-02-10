@@ -6,7 +6,25 @@
 #include <Accelerate/Accelerate.h>
 #endif
 
+// aubio headers (aubio.h has its own extern "C" guards)
+#include "aubio/aubio.h"
+
 namespace margelo::nitro::chorddsp {
+
+HybridChordDSP::~HybridChordDSP() {
+  if (onsetDetector_) {
+    del_aubio_onset(onsetDetector_);
+    onsetDetector_ = nullptr;
+  }
+  if (onsetInput_) {
+    del_fvec(onsetInput_);
+    onsetInput_ = nullptr;
+  }
+  if (onsetOutput_) {
+    del_fvec(onsetOutput_);
+    onsetOutput_ = nullptr;
+  }
+}
 
 float HybridChordDSP::hzToMel(float hz) {
   return 2595.0f * std::log10(1.0f + hz / 700.0f);
@@ -161,7 +179,8 @@ std::vector<double> HybridChordDSP::computeMelSpectrogram(const std::vector<doub
   return result;
 }
 
-std::vector<double> HybridChordDSP::computeChromagram(const std::vector<double>& samples, double sampleRate) {
+// Internal chromagram with configurable frequency range
+std::vector<double> HybridChordDSP::computeChromagramInternal(const std::vector<double>& samples, double sampleRate, float minFreq, float maxFreq) {
   int numSamples = static_cast<int>(samples.size());
   if (numSamples < kFFTSize) return std::vector<double>(12, 0.0);
 
@@ -202,7 +221,7 @@ std::vector<double> HybridChordDSP::computeChromagram(const std::vector<double>&
 
     for (int k = 1; k < fftBins; k++) {
       float freq = static_cast<float>(k) * sr / kFFTSize;
-      if (freq < 60.0f || freq > 2000.0f) continue;
+      if (freq < minFreq || freq > maxFreq) continue;
 
       float midiNote = 69.0f + 12.0f * std::log2(freq / 440.0f);
       int pitchClass = static_cast<int>(std::round(midiNote)) % 12;
@@ -228,7 +247,7 @@ std::vector<double> HybridChordDSP::computeChromagram(const std::vector<double>&
       float mag = (re * re + im * im) / kFFTSize;
 
       float freq = static_cast<float>(k) * sr / kFFTSize;
-      if (freq < 60.0f || freq > 2000.0f) continue;
+      if (freq < minFreq || freq > maxFreq) continue;
 
       float midiNote = 69.0f + 12.0f * std::log2(freq / 440.0f);
       int pitchClass = static_cast<int>(std::round(midiNote)) % 12;
@@ -245,6 +264,74 @@ std::vector<double> HybridChordDSP::computeChromagram(const std::vector<double>&
   }
 
   return chroma;
+}
+
+std::vector<double> HybridChordDSP::computeChromagram(const std::vector<double>& samples, double sampleRate) {
+  return computeChromagramInternal(samples, sampleRate, 60.0f, 2000.0f);
+}
+
+std::vector<double> HybridChordDSP::computeBassChromagram(const std::vector<double>& samples, double sampleRate) {
+  return computeChromagramInternal(samples, sampleRate, 60.0f, 250.0f);
+}
+
+// --- aubio onset detection ---
+
+void HybridChordDSP::initOnsetDetector(double sampleRate, double bufferSize, double hopSize) {
+  // Clean up previous instance
+  if (onsetDetector_) {
+    del_aubio_onset(onsetDetector_);
+    onsetDetector_ = nullptr;
+  }
+  if (onsetInput_) {
+    del_fvec(onsetInput_);
+    onsetInput_ = nullptr;
+  }
+  if (onsetOutput_) {
+    del_fvec(onsetOutput_);
+    onsetOutput_ = nullptr;
+  }
+
+  uint_t bufSize = static_cast<uint_t>(bufferSize);
+  uint_t hop = static_cast<uint_t>(hopSize);
+  uint_t sr = static_cast<uint_t>(sampleRate);
+
+  onsetHopSize_ = hop;
+  onsetDetector_ = new_aubio_onset("default", bufSize, hop, sr);
+  aubio_onset_set_threshold(onsetDetector_, 0.3f);
+  aubio_onset_set_silence(onsetDetector_, -40.0f);
+  aubio_onset_set_minioi_ms(onsetDetector_, 50.0f);
+
+  onsetInput_ = new_fvec(hop);
+  onsetOutput_ = new_fvec(1);
+}
+
+std::vector<double> HybridChordDSP::detectOnset(const std::vector<double>& samples) {
+  if (!onsetDetector_ || !onsetInput_ || !onsetOutput_) {
+    return {0.0, 0.0};
+  }
+
+  // Copy samples into aubio input buffer
+  uint_t len = std::min(static_cast<uint_t>(samples.size()), onsetHopSize_);
+  for (uint_t i = 0; i < len; i++) {
+    onsetInput_->data[i] = static_cast<smpl_t>(samples[i]);
+  }
+  // Zero-pad if needed
+  for (uint_t i = len; i < onsetHopSize_; i++) {
+    onsetInput_->data[i] = 0.0f;
+  }
+
+  aubio_onset_do(onsetDetector_, onsetInput_, onsetOutput_);
+
+  double isOnset = onsetOutput_->data[0] > 0.0f ? 1.0 : 0.0;
+  double descriptor = static_cast<double>(aubio_onset_get_descriptor(onsetDetector_));
+
+  return {isOnset, descriptor};
+}
+
+void HybridChordDSP::resetOnsetDetector() {
+  if (onsetDetector_) {
+    aubio_onset_reset(onsetDetector_);
+  }
 }
 
 } // namespace margelo::nitro::chorddsp
