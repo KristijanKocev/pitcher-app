@@ -271,7 +271,8 @@ std::vector<double> HybridChordDSP::computeChromagram(const std::vector<double>&
 }
 
 std::vector<double> HybridChordDSP::computeBassChromagram(const std::vector<double>& samples, double sampleRate) {
-  return computeChromagramInternal(samples, sampleRate, 60.0f, 250.0f);
+  // Bass range covers fundamentals of bass guitar and low piano (E1=41Hz to B3=247Hz)
+  return computeChromagramInternal(samples, sampleRate, 40.0f, 250.0f);
 }
 
 // --- aubio onset detection ---

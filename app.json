@@ -15,6 +15,7 @@
     "plugins": [
       "expo-audio-studio",
       "./plugins/withChordDSP",
+      "./plugins/withProductionScheme",
       [
         "react-native-audio-api",
         {

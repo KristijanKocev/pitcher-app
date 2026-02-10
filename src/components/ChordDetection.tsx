@@ -26,6 +26,7 @@ import { LegendList, LegendListRef } from "@legendapp/list";
 
 import {
   classifyChromaWithBass,
+  classifyChromaTwoStage,
   classifyChromaTopN,
   classifyFrame,
   ChordSmoother,
@@ -443,9 +444,21 @@ export function ChordDetection({
           });
         }
 
-        // Chroma classification with bass anchoring + transition priors [F2, F4]
+        // Two-stage chord classification (ChordAI-inspired):
+        // Stage 1: Root detection from bass
+        // Stage 2: Quality detection given root
         const previousRoot = chordSmootherRef.current.getCurrentRoot() || undefined;
-        const rawResult = classifyChromaWithBass(classChroma, classBassChroma, previousRoot);
+        const rawResult = classifyChromaTwoStage(classChroma, classBassChroma, previousRoot);
+
+        // Debug logging
+        const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+        const chromaStr = classChroma.map((v: number, i: number) =>
+          v > 0.2 ? `${noteNames[i]}:${v.toFixed(2)}` : null
+        ).filter(Boolean).join(' ');
+        const bassStr = classBassChroma.map((v: number, i: number) =>
+          v > 0.2 ? `${noteNames[i]}:${v.toFixed(2)}` : null
+        ).filter(Boolean).join(' ');
+        console.log(`[2Stage] ${chromaStr} | Bass: ${bassStr} → ${rawResult.chord} (${(rawResult.confidence * 100).toFixed(0)}%)`);
 
         // Fuse ML result: boost confidence when ML agrees, or defer to
         // high-confidence ML when chroma is uncertain

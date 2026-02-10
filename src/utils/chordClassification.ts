@@ -2,7 +2,12 @@
  * Chord Classification
  *
  * Converts BasicPitch note activations (88 piano keys) into chord labels
- * using chroma vector template matching with cosine similarity.
+ * using a two-stage approach inspired by ChordAI:
+ *
+ * Stage 1: Root Detection - uses bass chroma to identify the root note
+ * Stage 2: Quality Detection - given the root, classify chord quality
+ *
+ * This separation prevents harmonic bleed from confusing root detection.
  *
  * Supports 84 chords: 12 roots × 7 qualities (maj, min, 7, maj7, min7, sus2, sus4)
  */
@@ -17,6 +22,25 @@ const CHORD_TEMPLATES: Record<string, number[]> = {
   min7: [1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0],
   sus2: [1, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0],
   sus4: [1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0],
+};
+
+// Simplicity bias: prefer triads over extended chords unless the extension is clearly present.
+// Extended chords (4+ notes) get a penalty that must be overcome by strong 7th presence.
+const QUALITY_COMPLEXITY_PENALTY: Record<string, number> = {
+  maj: 0,
+  min: 0,
+  sus2: 0,
+  sus4: 0,
+  "7": 0.08, // dom7 penalty
+  maj7: 0.10, // maj7 penalty (slightly higher - often confused with triads)
+  min7: 0.08, // min7 penalty
+};
+
+// Index of the 7th degree for each 7th chord type (relative to root at 0)
+const SEVENTH_INDICES: Record<string, number> = {
+  "7": 10, // minor 7th (10 semitones from root)
+  maj7: 11, // major 7th (11 semitones from root)
+  min7: 10, // minor 7th (10 semitones from root)
 };
 
 const NOTE_NAMES = [
@@ -177,6 +201,10 @@ export function buildChromaFromActivations(
 /**
  * Classify a chroma vector into a chord label.
  *
+ * Applies a simplicity bias: 7th chords are penalized unless the 7th degree
+ * has sufficient energy in the chroma. This prevents over-eager detection of
+ * extended chords when only a triad is played.
+ *
  * @param chroma - 12-bin normalized chroma vector
  * @returns Best matching chord with confidence
  */
@@ -186,7 +214,31 @@ export function classifyChroma(chroma: number[]): ChordResult {
   for (const [quality, template] of Object.entries(CHORD_TEMPLATES)) {
     for (let root = 0; root < 12; root++) {
       const rotated = rotateTemplate(template, root);
-      const similarity = cosineSimilarity(chroma, rotated);
+      let similarity = cosineSimilarity(chroma, rotated);
+
+      // Apply simplicity bias for 7th chords
+      const penalty = QUALITY_COMPLEXITY_PENALTY[quality] ?? 0;
+      if (penalty > 0) {
+        const seventhIdx = SEVENTH_INDICES[quality];
+        if (seventhIdx !== undefined) {
+          // Get the chroma energy at the 7th position for this root
+          const seventhPosition = (root + seventhIdx) % 12;
+          const seventhEnergy = chroma[seventhPosition];
+
+          // Only apply full penalty reduction if 7th is clearly present (>0.4)
+          // Partial reduction for moderate presence (0.2-0.4)
+          // Full penalty if 7th is weak (<0.2)
+          if (seventhEnergy > 0.4) {
+            // Strong 7th present - no penalty
+          } else if (seventhEnergy > 0.2) {
+            // Moderate 7th - partial penalty
+            similarity -= penalty * 0.5;
+          } else {
+            // Weak/absent 7th - full penalty
+            similarity -= penalty;
+          }
+        }
+      }
 
       if (similarity > bestMatch.similarity) {
         bestMatch = { root: NOTE_NAMES[root], quality, similarity };
@@ -210,6 +262,8 @@ export function classifyChroma(chroma: number[]): ChordResult {
  * Classify a chroma vector with bass anchoring and transition priors.
  * Boosts chords whose root matches the dominant bass note (×1.15),
  * and applies transition plausibility when a previous root is known.
+ * Also applies simplicity bias for 7th chords.
+ * Uses bass 3rd detection to distinguish major/minor from sus chords.
  */
 export function classifyChromaWithBass(
   chroma: number[],
@@ -225,9 +279,103 @@ export function classifyChromaWithBass(
       const rotated = rotateTemplate(template, root);
       let similarity = cosineSimilarity(chroma, rotated);
 
-      // Bass anchoring: boost chords whose root matches the dominant bass note
-      if (dominantBass >= 0 && root === dominantBass) {
-        similarity *= 1.15;
+      // Apply simplicity bias for 7th chords
+      const penalty = QUALITY_COMPLEXITY_PENALTY[quality] ?? 0;
+      if (penalty > 0) {
+        const seventhIdx = SEVENTH_INDICES[quality];
+        if (seventhIdx !== undefined) {
+          const seventhPosition = (root + seventhIdx) % 12;
+          const seventhEnergy = chroma[seventhPosition];
+
+          if (seventhEnergy > 0.4) {
+            // Strong 7th present - no penalty
+          } else if (seventhEnergy > 0.2) {
+            // Moderate 7th - partial penalty
+            similarity -= penalty * 0.5;
+          } else {
+            // Weak/absent 7th - full penalty
+            similarity -= penalty;
+          }
+        }
+      }
+
+      // Bass 3rd detection: use bass to distinguish major/minor from sus chords.
+      // Only apply when the 3rd is actually prominent relative to other bass notes,
+      // to avoid false positives (e.g., G in bass being the 5th of C, not 3rd of E).
+      const minor3rdPos = (root + 3) % 12;
+      const major3rdPos = (root + 4) % 12;
+      const fifthPos = (root + 7) % 12;
+      const bassMinor3rd = bassChroma[minor3rdPos];
+      const bassMajor3rd = bassChroma[major3rdPos];
+      const bassRoot = bassChroma[root];
+      const bassFifth = bassChroma[fifthPos];
+
+      // Find max bass energy to check if 3rd is actually prominent
+      let bassMax = 0;
+      for (let i = 0; i < 12; i++) {
+        if (bassChroma[i] > bassMax) bassMax = bassChroma[i];
+      }
+
+      if (quality === "min" || quality === "min7") {
+        // Only boost if minor 3rd is near-dominant in bass (within 30% of max)
+        // AND stronger than this chord's 5th (to distinguish from relative major)
+        if (bassMinor3rd > 0.5 && bassMinor3rd > bassMax * 0.7 && bassMinor3rd > bassFifth) {
+          similarity *= 1.10;
+        }
+      } else if (quality === "maj" || quality === "maj7" || quality === "7") {
+        // Only boost if major 3rd is near-dominant in bass
+        if (bassMajor3rd > 0.5 && bassMajor3rd > bassMax * 0.7 && bassMajor3rd > bassFifth) {
+          similarity *= 1.10;
+        }
+      } else if (quality === "sus2" || quality === "sus4") {
+        // Penalize sus chords when a clear 3rd is present in chroma.
+        // For sus chords to be valid, there should be NO 3rd (they replace 3rd with 2nd or 4th).
+
+        // Check full chroma for 3rd presence
+        const chromaMinor3rd = chroma[(root + 3) % 12];
+        const chromaMajor3rd = chroma[(root + 4) % 12];
+
+        // Also check the sus note and the 5th
+        const susNote = quality === "sus4" ? chroma[(root + 5) % 12] : chroma[(root + 2) % 12];
+        const fifthNote = chroma[(root + 7) % 12];
+
+        // Strong penalty when any 3rd is present - sus chords should NOT have a 3rd
+        if (chromaMinor3rd > 0.3 || chromaMajor3rd > 0.3) {
+          similarity *= 0.5; // Very heavy penalty
+        } else if (chromaMinor3rd > 0.15 || chromaMajor3rd > 0.15) {
+          similarity *= 0.7;
+        }
+
+        // Additional penalty if sus note is weaker than the 3rd
+        // This catches cases like Asus4 vs Dm where F (m3 of D) is stronger than E (P5 of A mistaken as sus)
+        const strongerThird = Math.max(chromaMinor3rd, chromaMajor3rd);
+        if (susNote < strongerThird && strongerThird > 0.2) {
+          similarity *= 0.6;
+        }
+
+        // Penalty if the 5th is much weaker than expected
+        if (fifthNote < 0.2 && chroma[root] > 0.5) {
+          similarity *= 0.8;
+        }
+      }
+
+      // Bass anchoring: strongly boost chords whose root matches the dominant bass note.
+      // When bass clearly indicates a root, trust it heavily - this distinguishes
+      // C major from Em (both share E,G but bass shows C vs E).
+      if (dominantBass >= 0) {
+        if (root === dominantBass) {
+          // Strong boost when root matches dominant bass
+          similarity *= 1.25;
+        } else {
+          // Penalize chords whose root doesn't match when bass is clear
+          // This prevents Em from winning over C when bass shows C
+          const bassStrength = bassChroma[dominantBass];
+          if (bassStrength > 0.7) {
+            similarity *= 0.85; // Strong penalty when bass is very clear
+          } else if (bassStrength > 0.5) {
+            similarity *= 0.92; // Moderate penalty
+          }
+        }
       }
 
       // Transition prior: penalize implausible root movements
@@ -254,8 +402,271 @@ export function classifyChromaWithBass(
 }
 
 /**
+ * Compute bass reliability score (0-1). Low score means bass is noisy/unclear.
+ * We're conservative here - only trust bass when it's very clear.
+ */
+function getBassReliability(bassChroma: number[]): number {
+  let max = 0;
+  let secondMax = 0;
+  let sum = 0;
+  let nonZeroCount = 0;
+
+  for (let i = 0; i < 12; i++) {
+    sum += bassChroma[i];
+    if (bassChroma[i] > 0.1) nonZeroCount++;
+    if (bassChroma[i] > max) {
+      secondMax = max;
+      max = bassChroma[i];
+    } else if (bassChroma[i] > secondMax) {
+      secondMax = bassChroma[i];
+    }
+  }
+
+  const avg = sum / 12;
+  if (max < 0.4) return 0; // No clear bass
+
+  // If too many bins are active, bass is noisy
+  if (nonZeroCount > 6) return 0.1;
+
+  // High reliability when peak is well above average and second peak
+  const peakRatio = max / (avg + 0.01);
+  const separation = (max - secondMax) / (max + 0.01);
+
+  // More conservative: need strong separation
+  if (separation < 0.3) return 0.2; // Poor separation
+
+  return Math.min(1, (peakRatio - 2) * 0.15 + separation * 0.4);
+}
+
+/**
+ * Two-stage chord classification with bass reliability check.
+ *
+ * When bass is reliable: uses bass for root, then matches quality.
+ * When bass is unreliable: uses pure chroma template matching.
+ * Hybrid: compares both approaches and picks best match.
+ */
+export function classifyChromaTwoStage(
+  chroma: number[],
+  bassChroma: number[],
+  previousRoot?: string
+): ChordResult {
+  const bassReliability = getBassReliability(bassChroma);
+
+  // Always compute pure chroma-based result as fallback/comparison
+  const chromaResult = classifyChromaWithPenalties(chroma, previousRoot);
+
+  // If bass is unreliable, trust pure chroma matching
+  if (bassReliability < 0.3) {
+    return chromaResult;
+  }
+
+  // Stage 1: Determine root candidates from bass + chroma
+  const rootCandidates: { root: number; score: number }[] = [];
+
+  for (let root = 0; root < 12; root++) {
+    // Blend bass and chroma for root detection based on reliability
+    let score = bassChroma[root] * bassReliability + chroma[root] * (1 - bassReliability * 0.5);
+
+    // Also consider the 5th in bass (common for inversions)
+    const fifthPos = (root + 7) % 12;
+    score += bassChroma[fifthPos] * 0.2 * bassReliability;
+
+    // Transition prior
+    if (previousRoot) {
+      score *= getTransitionPlausibility(previousRoot, NOTE_NAMES[root]);
+    }
+
+    rootCandidates.push({ root, score });
+  }
+
+  // Sort by score descending
+  rootCandidates.sort((a, b) => b.score - a.score);
+
+  // Take top 5 root candidates (more candidates when bass is less reliable)
+  const numCandidates = bassReliability > 0.6 ? 3 : 5;
+  const topRoots = rootCandidates.slice(0, numCandidates);
+
+  // Stage 2: For each root candidate, find best quality match
+  let bestMatch = { root: "C", quality: "maj", similarity: -1, rootScore: 0 };
+
+  for (const { root, score: rootScore } of topRoots) {
+    for (const [quality, template] of Object.entries(CHORD_TEMPLATES)) {
+      const rotated = rotateTemplate(template, root);
+      let similarity = cosineSimilarity(chroma, rotated);
+
+      // Apply simplicity bias for 7th chords
+      const penalty = QUALITY_COMPLEXITY_PENALTY[quality] ?? 0;
+      if (penalty > 0) {
+        const seventhIdx = SEVENTH_INDICES[quality];
+        if (seventhIdx !== undefined) {
+          const seventhPosition = (root + seventhIdx) % 12;
+          const seventhEnergy = chroma[seventhPosition];
+
+          if (seventhEnergy > 0.4) {
+            // Strong 7th present - no penalty
+          } else if (seventhEnergy > 0.2) {
+            similarity -= penalty * 0.5;
+          } else {
+            similarity -= penalty;
+          }
+        }
+      }
+
+      // Quality-specific validation using chroma
+      const thirdPos = (root + (quality === "min" || quality === "min7" ? 3 : 4)) % 12;
+
+      // For major/minor, boost if the 3rd is present
+      if (quality === "maj" || quality === "min" || quality === "maj7" || quality === "min7" || quality === "7") {
+        const thirdEnergy = chroma[thirdPos];
+        if (thirdEnergy > 0.3) {
+          similarity *= 1.08;
+        }
+      }
+
+      // For sus chords, penalize strongly if a clear 3rd is present
+      if (quality === "sus2" || quality === "sus4") {
+        const minor3rd = chroma[(root + 3) % 12];
+        const major3rd = chroma[(root + 4) % 12];
+        const susNote = quality === "sus4" ? chroma[(root + 5) % 12] : chroma[(root + 2) % 12];
+
+        // Very heavy penalty when any 3rd is clearly present
+        if (minor3rd > 0.3 || major3rd > 0.3) {
+          similarity *= 0.5;
+        } else if (minor3rd > 0.15 || major3rd > 0.15) {
+          similarity *= 0.7;
+        }
+
+        // Penalty if sus note is weaker than the 3rd
+        const strongerThird = Math.max(minor3rd, major3rd);
+        if (susNote < strongerThird && strongerThird > 0.2) {
+          similarity *= 0.6;
+        }
+
+        // Penalty if sus note is not clearly present
+        if (susNote < 0.2) {
+          similarity *= 0.7;
+        }
+      }
+
+      // Light bass boost only when bass is reliable
+      if (bassReliability > 0.5) {
+        const bassRoot = bassChroma[root];
+        if (bassRoot > 0.5) {
+          similarity *= 1.0 + bassReliability * 0.1;
+        }
+      }
+
+      if (similarity > bestMatch.similarity) {
+        bestMatch = { root: NOTE_NAMES[root], quality, similarity, rootScore };
+      }
+    }
+  }
+
+  // Compare with pure chroma result - pick the one with higher confidence
+  // But prefer the two-stage result when bass is reliable
+  const twoStageConfidence = bestMatch.similarity;
+  const chromaConfidence = chromaResult.confidence;
+
+  if (chromaConfidence > twoStageConfidence + 0.05 * bassReliability) {
+    return chromaResult;
+  }
+
+  const displayQuality = QUALITY_DISPLAY[bestMatch.quality] ?? bestMatch.quality;
+  const chordName = `${bestMatch.root}${displayQuality}`;
+
+  return {
+    chord: chordName,
+    root: bestMatch.root,
+    quality: bestMatch.quality,
+    confidence: Math.min(1, bestMatch.similarity),
+    chroma,
+  };
+}
+
+/**
+ * Pure chroma-based classification with penalties (no bass).
+ */
+function classifyChromaWithPenalties(chroma: number[], previousRoot?: string): ChordResult {
+  let bestMatch = { root: "C", quality: "maj", similarity: -1 };
+
+  for (const [quality, template] of Object.entries(CHORD_TEMPLATES)) {
+    for (let root = 0; root < 12; root++) {
+      const rotated = rotateTemplate(template, root);
+      let similarity = cosineSimilarity(chroma, rotated);
+
+      // Transition prior
+      if (previousRoot) {
+        similarity *= getTransitionPlausibility(previousRoot, NOTE_NAMES[root]);
+      }
+
+      // Apply simplicity bias for 7th chords
+      const penalty = QUALITY_COMPLEXITY_PENALTY[quality] ?? 0;
+      if (penalty > 0) {
+        const seventhIdx = SEVENTH_INDICES[quality];
+        if (seventhIdx !== undefined) {
+          const seventhPosition = (root + seventhIdx) % 12;
+          const seventhEnergy = chroma[seventhPosition];
+          if (seventhEnergy < 0.4) {
+            similarity -= penalty * (seventhEnergy > 0.2 ? 0.5 : 1);
+          }
+        }
+      }
+
+      // For sus chords, penalize strongly if a clear 3rd is present
+      if (quality === "sus2" || quality === "sus4") {
+        const minor3rd = chroma[(root + 3) % 12];
+        const major3rd = chroma[(root + 4) % 12];
+        const susNote = quality === "sus4" ? chroma[(root + 5) % 12] : chroma[(root + 2) % 12];
+
+        // Very heavy penalty when any 3rd is present
+        if (minor3rd > 0.3 || major3rd > 0.3) {
+          similarity *= 0.5;
+        } else if (minor3rd > 0.15 || major3rd > 0.15) {
+          similarity *= 0.7;
+        }
+
+        // Penalty if sus note is weaker than the 3rd
+        const strongerThird = Math.max(minor3rd, major3rd);
+        if (susNote < strongerThird && strongerThird > 0.2) {
+          similarity *= 0.6;
+        }
+
+        // Penalty if sus note is not present
+        if (susNote < 0.2) {
+          similarity *= 0.7;
+        }
+      }
+
+      // Boost major/minor when 3rd is present
+      if (quality === "maj" || quality === "min") {
+        const thirdPos = (root + (quality === "min" ? 3 : 4)) % 12;
+        if (chroma[thirdPos] > 0.3) {
+          similarity *= 1.08;
+        }
+      }
+
+      if (similarity > bestMatch.similarity) {
+        bestMatch = { root: NOTE_NAMES[root], quality, similarity };
+      }
+    }
+  }
+
+  const displayQuality = QUALITY_DISPLAY[bestMatch.quality] ?? bestMatch.quality;
+  const chordName = `${bestMatch.root}${displayQuality}`;
+
+  return {
+    chord: chordName,
+    root: bestMatch.root,
+    quality: bestMatch.quality,
+    confidence: Math.min(1, bestMatch.similarity),
+    chroma,
+  };
+}
+
+/**
  * Return the top N chord matches for a chroma vector, sorted by confidence descending.
  * Deduplicates by chord name (keeps highest confidence per unique name).
+ * Applies simplicity bias for 7th chords.
  */
 export function classifyChromaTopN(chroma: number[], n: number): ChordResult[] {
   const all: { root: string; quality: string; similarity: number }[] = [];
@@ -263,7 +674,28 @@ export function classifyChromaTopN(chroma: number[], n: number): ChordResult[] {
   for (const [quality, template] of Object.entries(CHORD_TEMPLATES)) {
     for (let root = 0; root < 12; root++) {
       const rotated = rotateTemplate(template, root);
-      const similarity = cosineSimilarity(chroma, rotated);
+      let similarity = cosineSimilarity(chroma, rotated);
+
+      // Apply simplicity bias for 7th chords
+      const penalty = QUALITY_COMPLEXITY_PENALTY[quality] ?? 0;
+      if (penalty > 0) {
+        const seventhIdx = SEVENTH_INDICES[quality];
+        if (seventhIdx !== undefined) {
+          const seventhPosition = (root + seventhIdx) % 12;
+          const seventhEnergy = chroma[seventhPosition];
+
+          if (seventhEnergy > 0.4) {
+            // Strong 7th present - no penalty
+          } else if (seventhEnergy > 0.2) {
+            // Moderate 7th - partial penalty
+            similarity -= penalty * 0.5;
+          } else {
+            // Weak/absent 7th - full penalty
+            similarity -= penalty;
+          }
+        }
+      }
+
       all.push({ root: NOTE_NAMES[root], quality, similarity });
     }
   }
