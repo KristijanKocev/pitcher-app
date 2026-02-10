@@ -1,0 +1,17 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": ["chorddsp"],
+  "ios": {
+    "iosModuleName": "NitroChordDsp"
+  },
+  "android": {
+    "androidNamespace": ["chorddsp"],
+    "androidCxxLibName": "NitroChordDsp"
+  },
+  "autolinking": {
+    "ChordDSP": {
+      "cpp": "HybridChordDSP"
+    }
+  },
+  "ignorePaths": ["**/node_modules"]
+}

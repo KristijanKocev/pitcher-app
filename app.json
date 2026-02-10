@@ -14,6 +14,7 @@
     },
     "plugins": [
       "expo-audio-studio",
+      "./plugins/withChordDSP",
       [
         "react-native-audio-api",
         {
@@ -31,7 +32,8 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.justanotherheroriding.pitcher"
+      "bundleIdentifier": "com.justanotherheroriding.pitcher",
+      "appleTeamId": "7833YCDH6R"
     },
     "android": {
       "adaptiveIcon": {

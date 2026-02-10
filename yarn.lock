@@ -2175,6 +2175,11 @@ chalk@^4.0.0, chalk@^4.1.0, chalk@^4.1.2:
     ansi-styles "^4.1.0"
     supports-color "^7.1.0"
 
+"chord-dsp@file:./modules/chord-dsp":
+  version "0.1.0"
+  dependencies:
+    react-native-nitro-modules "^0.20.0"
+
 chownr@^3.0.0:
   version "3.0.0"
   resolved "https://registry.yarnpkg.com/chownr/-/chownr-3.0.0.tgz#9855e64ecd240a9cc4267ce8a4aa5d24a1da15e4"
@@ -4124,6 +4129,11 @@ react-native-is-edge-to-edge@1.2.1, react-native-is-edge-to-edge@^1.2.1:
   version "1.2.1"
   resolved "https://registry.yarnpkg.com/react-native-is-edge-to-edge/-/react-native-is-edge-to-edge-1.2.1.tgz#64e10851abd9d176cbf2b40562f751622bde3358"
   integrity sha512-FLbPWl/MyYQWz+KwqOZsSyj2JmLKglHatd3xLZWskXOpRaio4LfEDEz8E/A6uD8QoTHW6Aobw1jbEwK7KMgR7Q==
+
+react-native-nitro-modules@^0.20.0:
+  version "0.20.1"
+  resolved "https://registry.yarnpkg.com/react-native-nitro-modules/-/react-native-nitro-modules-0.20.1.tgz#99568818b90e364f1e08b5341a7868eca3762333"
+  integrity sha512-ffa8GbnLBs7irEx1ZCl7WdHzzA5uj4ngh7hIWbeUfBs8m2iAn+byowOJWHKmO+RA2hp9dVwTxHYSBOqIvTVvHA==
 
 react-native-reanimated@^4.2.1:
   version "4.2.1"

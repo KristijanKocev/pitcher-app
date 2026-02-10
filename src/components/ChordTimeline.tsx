@@ -55,7 +55,7 @@ const CONFIG = {
   ROW_HEIGHT: 52,
 
   // Logging
-  LOG_ENABLED: true,
+  LOG_ENABLED: false,
 };
 
 // Note colors
@@ -486,7 +486,7 @@ function detectPitchesInstrumentMode(
         const beta = magnitudes[i];
         const gamma = magnitudes[i + 1];
         const denom = alpha - 2 * beta + gamma;
-        
+
         let frequency: number;
         if (Math.abs(denom) > 0.0001) {
           const p = 0.5 * (alpha - gamma) / denom;
@@ -528,15 +528,15 @@ function detectPitchesInstrumentMode(
   // 2. For each note name group, keep only the lowest octave (fundamental)
   // 3. Filter obvious harmonics (peaks at exact 2x, 3x, etc. of a stronger peak)
   // 4. But preserve different note names even if they happen to be at harmonic ratios
-  
+
   const HARMONIC_TOLERANCE = 0.04; // 4% tolerance for exact harmonic detection
-  
+
   // First, convert all peaks to note info
   const peaksWithNotes = spectralPeaks.map(peak => ({
     ...peak,
     noteInfo: frequencyToNoteInfo(peak.frequency),
   }));
-  
+
   // Group by note name (ignoring octave)
   const noteGroups = new Map<string, typeof peaksWithNotes>();
   for (const peak of peaksWithNotes) {
@@ -546,18 +546,18 @@ function detectPitchesInstrumentMode(
     }
     noteGroups.get(noteName)!.push(peak);
   }
-  
+
   // For each note name, keep only the strongest occurrence
   // This handles octave harmonics (A3 vs A4, C3 vs C4, etc.)
   const representativeNotes: typeof peaksWithNotes = [];
-  
+
   for (const [noteName, peaks] of noteGroups) {
     // Sort by magnitude (strongest first)
     peaks.sort((a, b) => b.magnitude - a.magnitude);
-    
+
     // Keep the strongest peak for this note name
     const strongest = peaks[0];
-    
+
     // But if there's a lower octave version that's at least 40% as strong,
     // prefer the lower octave (it's likely the true fundamental)
     let representative = strongest;
@@ -569,9 +569,9 @@ function detectPitchesInstrumentMode(
         }
       }
     }
-    
+
     representativeNotes.push(representative);
-    
+
     if (CONFIG.LOG_ENABLED && peaks.length > 1) {
       const filtered = peaks.filter(p => p !== representative);
       for (const f of filtered) {
@@ -581,26 +581,26 @@ function detectPitchesInstrumentMode(
       }
     }
   }
-  
+
   // Now filter peaks that are exact harmonics of much stronger peaks
   // Only filter if: (1) exact harmonic ratio AND (2) significantly weaker AND (3) different note name
   const filteredPeaks: typeof peaksWithNotes = [];
-  
+
   // Sort by magnitude for processing
   representativeNotes.sort((a, b) => b.magnitude - a.magnitude);
-  
+
   for (const peak of representativeNotes) {
     let shouldFilter = false;
     let filterReason = "";
-    
+
     // Check if this peak is an exact harmonic of a STRONGER, DIFFERENT note
     for (const stronger of filteredPeaks) {
       // Skip if same note name (already handled by octave grouping)
       if (peak.noteInfo.noteName === stronger.noteInfo.noteName) continue;
-      
+
       const ratio = peak.frequency / stronger.frequency;
       const nearestHarmonic = Math.round(ratio);
-      
+
       // Only filter if:
       // 1. Very close to an exact harmonic (within 4%)
       // 2. The harmonic number is reasonable (2-12)
@@ -615,17 +615,17 @@ function detectPitchesInstrumentMode(
         filterReason = `weak harmonic ${nearestHarmonic}x of ${stronger.noteInfo.noteName}${stronger.noteInfo.octave} (${stronger.frequency.toFixed(0)}Hz)`;
       }
     }
-    
+
     if (CONFIG.LOG_ENABLED && shouldFilter) {
       console.log(
         `  FILTERED: ${peak.noteInfo.noteName}${peak.noteInfo.octave} (${peak.frequency.toFixed(1)} Hz) - ${filterReason}`
       );
     }
-    
+
     if (!shouldFilter) {
       filteredPeaks.push(peak);
     }
-    
+
     if (filteredPeaks.length >= CONFIG.MAX_NOTES_PER_FRAME + 2) break;
   }
 
@@ -654,20 +654,20 @@ function detectPitchesInstrumentMode(
   // Filter notes that are too close in semitones to stronger notes
   // This catches cases where spectral leakage creates nearby false peaks
   const finalNotes: DetectedNote[] = [];
-  
+
   for (const note of candidateNotes) {
     let isTooClose = false;
-    
+
     for (const accepted of finalNotes) {
       const semitoneDiff = Math.abs(note.midiNote - accepted.midiNote);
-      
+
       // If within 1 semitone of a stronger note, it's likely an artifact
       if (semitoneDiff <= 1 && note.peakMagnitude < accepted.confidence) {
         isTooClose = true;
         break;
       }
     }
-    
+
     if (!isTooClose) {
       finalNotes.push({
         noteName: note.noteName,
@@ -783,7 +783,7 @@ interface NoteChipProps {
 
 const NoteChip = memo(function NoteChip({ note }: NoteChipProps) {
   const color = NOTE_COLORS[note.noteName] || "#888888";
-  
+
   // More pronounced opacity based on confidence
   // confidence 1.0 -> opacity 1.0 (fully visible)
   // confidence 0.5 -> opacity 0.6 (somewhat faded)
@@ -803,7 +803,7 @@ const NoteChip = memo(function NoteChip({ note }: NoteChipProps) {
       : Math.abs(note.cents) <= 15
         ? "#FBBF24"
         : "#F87171";
-  
+
   // Show confidence percentage for debugging/transparency
   const confidencePercent = Math.round(note.confidence * 100);
 
@@ -823,7 +823,7 @@ const NoteChip = memo(function NoteChip({ note }: NoteChipProps) {
           {centsDisplay}
         </Text>
       )}
-      <Text style={[styles.confidenceText, {position: 'absolute', top: -8, backgroundColor: paletteTokens.primary.surface[2], borderRadius:99, paddingHorizontal: 4, paddingVertical: 2},]}>{confidencePercent}%</Text>
+      <Text style={[styles.confidenceText, { position: 'absolute', top: -8, backgroundColor: paletteTokens.primary.surface[2], borderRadius: 99, paddingHorizontal: 4, paddingVertical: 2 },]}>{confidencePercent}%</Text>
     </View>
   );
 });
@@ -1192,7 +1192,7 @@ export function ChordTimeline({
         style={[
           styles.timelineContainer,
           isLandscape && styles.timelineContainerLandscape,
-          {marginBottom: 36}
+          { marginBottom: 36 }
         ]}
       >
         {timeline.length === 0 ? (
@@ -1219,7 +1219,7 @@ export function ChordTimeline({
         )}
       </View>
 
-      
+
     </View>
   );
 }
@@ -1304,7 +1304,7 @@ const styles = StyleSheet.create({
   },
   listContent: {
     padding: 12,
-    paddingBottom:96
+    paddingBottom: 96
   },
   emptyState: {
     flex: 1,
